@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:int="http://www.springframework.org/schema/integration"
+	xmlns:int-amqp="http://www.springframework.org/schema/integration/amqp"
+	xmlns:rabbit="http://www.springframework.org/schema/rabbit"
+	xmlns:int-jdbc="http://www.springframework.org/schema/integration/jdbc"
+	xmlns:jdbc="http://www.springframework.org/schema/jdbc"
+	xmlns:int-mongodb="http://www.springframework.org/schema/integration/mongodb"
+	xmlns:mongo="http://www.springframework.org/schema/data/mongo"
+	xmlns:int-stream="http://www.springframework.org/schema/integration/stream"
+	xsi:schemaLocation="http://www.springframework.org/schema/integration/amqp http://www.springframework.org/schema/integration/amqp/spring-integration-amqp.xsd
+		http://www.springframework.org/schema/integration http://www.springframework.org/schema/integration/spring-integration.xsd
+		http://www.springframework.org/schema/integration/stream http://www.springframework.org/schema/integration/stream/spring-integration-stream.xsd
+		http://www.springframework.org/schema/rabbit http://www.springframework.org/schema/rabbit/spring-rabbit.xsd
+		http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+		http://www.springframework.org/schema/jdbc http://www.springframework.org/schema/jdbc/spring-jdbc.xsd
+		http://www.springframework.org/schema/integration/jdbc http://www.springframework.org/schema/integration/jdbc/spring-integration-jdbc.xsd
+		http://www.springframework.org/schema/integration/mongodb http://www.springframework.org/schema/integration/mongodb/spring-integration-mongodb-2.2.xsd">
+
+	<!-- FROM STDIN TO RABBITMQ -->
+	<int-stream:stdin-channel-adapter id="consoleIn"
+		channel="toRabbit">
+		<int:poller fixed-delay="1000" max-messages-per-poll="1" />
+	</int-stream:stdin-channel-adapter>
+
+	<int:channel id="toRabbit" />
+
+	<int-amqp:outbound-channel-adapter
+		id="RabbitIn" channel="toRabbit" amqp-template="amqpTemplate" exchange-name="si.test.exchange"
+		routing-key="si.test.binding" />
+
+
+
+	<!-- FROM RABBITMQ TO DATABASES AND STDOUT -->
+	<int-amqp:inbound-channel-adapter id="RabbitOut" channel="toTransformer"
+		queue-names="si.test.queue" connection-factory="connectionFactory" />
+	
+	<int:channel id="toTransformer"></int:channel>
+
+	<!-- transforms name::country::description into a museum pojo -->
+	<bean id="transformer" class="org.luigisworld.util.POJOTransformer"/>
+	<int:transformer id="POJO" input-channel="toTransformer" output-channel="subscribe-db"
+		method="toMuseum" ref="transformer">
+	</int:transformer>
+
+
+	<int:publish-subscribe-channel id="subscribe-db"></int:publish-subscribe-channel>
+	
+	<!-- prints museum pojo -->
+	<int-stream:stdout-channel-adapter id="consoleOut" append-newline="true" channel="subscribe-db"/>
+		
+	<!-- imports databases configuration -->	
+	<import resource="datasource.xml" />
+    
+    <!-- save the museum into the collection museums in our mongodb -->
+    <!-- we don't need to transform our POJO -->
+	<int-mongodb:outbound-channel-adapter id="MongoDB"
+		channel="subscribe-db"
+		collection-name="museums" mongodb-factory="mongoDbFactory"/>		
+
+	<!-- transform the POJO into a Map -->
+	<int:object-to-map-transformer id="MAP" input-channel="subscribe-db" output-channel="toSQL"></int:object-to-map-transformer>
+	
+	<int:channel id="toSQL"></int:channel>
+	
+	<!-- inserts the museum in MySQL -->
+	<!-- the payload must be a map, list or array -->
+	<int-jdbc:outbound-channel-adapter id="MySQL"
+	    query="insert into museums (name, country, description) values (:payload[name], :payload[country], :payload[description])"
+	    data-source="mySQLDataSource" channel="toSQL"/>
+
+	
+	
+
+	<!-- RABBITMQ CONFIGURATION -->
+	<rabbit:connection-factory id="connectionFactory" />
+	<rabbit:template id="amqpTemplate" connection-factory="connectionFactory" />
+	<rabbit:admin connection-factory="connectionFactory" />
+	<rabbit:queue name="si.test.queue" />
+
+	<!-- creates the queue -->
+	<rabbit:direct-exchange name="si.test.exchange">
+		<rabbit:bindings>
+			<rabbit:binding queue="si.test.queue" key="si.test.binding" />
+		</rabbit:bindings>
+	</rabbit:direct-exchange>
+</beans>
